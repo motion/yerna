@@ -15,7 +15,7 @@ const Promise = require('bluebird');
 const { getPackagesPath, getPackages } = require('../lib/packages');
 const { linkPackages } = require('../lib/linking');
 const { runYarnWithPackageJsonMangling } = require('../lib/yarn-with-package-json-mangling');
-const { Logger } = require('../lib/logger');
+const { logger } = require('../lib/logger');
 const { createTaskRunner, runPackagesToposorted, abort } = require('../lib/taskrunning');
 
 function optParallel(n) {
