@@ -13,7 +13,7 @@ const fs = require('fs');
 const Promise = require('bluebird');
 
 const { getPackagesPath, getPackages } = require('../lib/packages');
-const { linkAllPackagesToEachOther } = require('../lib/linking');
+const { linkPackages } = require('../lib/linking');
 const { runYarnWithPackageJsonMangling } = require('../lib/yarn-with-package-json-mangling');
 const { Logger } = require('../lib/logger');
 const { createTaskRunner, runPackagesToposorted, abort } = require('../lib/taskrunning');
@@ -166,8 +166,9 @@ function getSelectedPackages(additionalFilter = () => true) {
 function performLink() {
   const startTime = Date.now();
   sideEffectingInit();
-  const packageCount = linkAllPackagesToEachOther(getPackagesPath());
-  console.error(`yerna: linked ${packageCount.toString().cyan} local packages`);
+  const packages = getPackages(getPackagesPath());
+  linkPackages(packages);
+  console.error(`yerna: linked ${_.size(packages).toString().cyan} local packages`);
   Logger.logSuccessTiming(startTime);
 }
 
