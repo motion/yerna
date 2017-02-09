@@ -6,18 +6,10 @@ require('../lib/error-handling').attachGlobalErrorHandling();
 process.exitCode = 0;
 
 const chalk = require('chalk');
-const path = require('path');
-const _ = require('lodash');
 const commander = require('commander');
-const child_process = require('child_process');
-const fs = require('fs');
-const Promise = require('bluebird');
 
-const { getPackagesPath, getPackages } = require('../lib/packages');
-const { linkAllPackagesToEachOther } = require('../lib/linking');
-const { runYarnWithPackageJsonMangling } = require('../lib/yarn-with-package-json-mangling');
-const { logger, deleteLogFile, LoggerWrapper } = require('../lib/logger');
-const { createTaskRunner, runPackagesToposorted, abort } = require('../lib/taskrunning');
+const { performInstall, performLink, performList, performRun, performExec } = require('../lib')
+const { logger, deleteLogFile } = require('../lib/logger');
 
 function optParallel(n) {
   if (n == null || +n <= 0 || Math.round(n) !== +n) {
@@ -28,65 +20,10 @@ function optParallel(n) {
   return +n;
 }
 
-function concatOpt(opt, allOpts) {
-  return allOpts.concat([ opt ]);
+function command(fn) {
+  sideEffectingInit()
+  fn()
 }
-
-commander
-  .description('Yerna: run tasks over one or more packages in parallel')
-  .usage('<command> [yerna options] [-- delegate options]')
-  .version(require('../package.json').version)
-  .option('-i, --include <regex>', 'run command only on packages matching <regex>; can be specified multiple times (default: all packages)', concatOpt, [])
-  .option('-x, --exclude <regex>', 'run command except on packages matching <regex>; can be specified multiple times (default: no excludes)', concatOpt, [])
-  .option('--dependents', 'additionally include all transitive dependents of selected packages (even when excluded)', false)
-  .option('--dependencies', 'additionally include all transitive dependencies of selected packages (even when excluded)', false)
-  .option('-p, --parallel <n>', 'run up to <n> processes in parallel (default: 4)', optParallel, 4)
-  .option('-l, --loglevel <level>', 'set the log level for Yerna', /^(verbose|info|warn|error)$/i, 'info')
-  .option('-c, --no-color', 'disable colorized output', false);
-
-commander
-  .command('install -- [args...]')
-  .description('`yarn install` for the specified packages')
-  .action(performInstall);
-
-commander
-  .command('link')
-  .description('symlink all local package dependencies (ignores all flags)')
-  .action(performLink);
-
-commander
-  .command('list')
-  .description('list package names matching all provided flags')
-  .action(performList);
-
-commander
-  .command('run <scriptname> -- [args...]')
-  .description('`yarn run <scriptname>` for the specified packages')
-  .action(performRun);
-
-commander
-  .command('exec <executable> -- [args...]')
-  .description('run `<executable> <args>` for the specified packages')
-  .action(performExec);
-
-commander.on('--help', () =>{
-  [
-    '  Notes:',
-    '',
-    '    - Use -- to separate arguments intended for Yarn. See examples.',
-    '    - Most tasks automatically relink local dependencies; `yerna link` usage should be rare.',
-    '',
-    '  Examples:',
-    '',
-    '    $ yerna install',
-    '    $ yerna install --include foo',
-    '    $ yerna install -- --pure-lockfile',
-    '    $ yerna install --include foo --include bar -- --pure-lockfile',
-    '    $ yerna run taskname --include foo --exclude bar',
-    '    $ yerna exec ls -- -la',
-    ''
-  ].forEach(line => console.log(line));
-});
 
 let didInit = false;
 function sideEffectingInit() {
@@ -119,121 +56,65 @@ function sideEffectingInit() {
   });
 }
 
-function findTransitiveDependentsOrDependencies(allPackages, rootPackageName, typeKey) {
-  const selectedPackageNames = [];
-  let packageQueue = [ allPackages[rootPackageName] ];
-  while (packageQueue.length) {
-    const currentPackage = packageQueue.shift();
-    if (selectedPackageNames.indexOf(currentPackage.name) === -1) {
-      selectedPackageNames.push(currentPackage.name);
-      packageQueue = packageQueue.concat(currentPackage[typeKey].map(packageName => allPackages[packageName]))
-    }
-  }
-  return selectedPackageNames.map(packageName => allPackages[packageName]);
+function concatOpt(opt, allOpts) {
+  return allOpts.concat([ opt ]);
 }
 
-function maybeIncludeDependentsAndDependencies(allPackages, package) {
-  let packages = [ package ];
+commander
+  .description('Yerna: run tasks over one or more packages in parallel')
+  .usage('<command> [yerna options] [-- delegate options]')
+  .version(require('../package.json').version)
+  .option('-i, --include <regex>', 'run command only on packages matching <regex>; can be specified multiple times (default: all packages)', concatOpt, [])
+  .option('-x, --exclude <regex>', 'run command except on packages matching <regex>; can be specified multiple times (default: no excludes)', concatOpt, [])
+  .option('--dependents', 'additionally include all transitive dependents of selected packages (even when excluded)', false)
+  .option('--dependencies', 'additionally include all transitive dependencies of selected packages (even when excluded)', false)
+  .option('-p, --parallel <n>', 'run up to <n> processes in parallel (default: 4)', optParallel, 4)
+  .option('-l, --loglevel <level>', 'set the log level for Yerna', /^(verbose|info|warn|error)$/i, 'info')
+  .option('-c, --no-color', 'disable colorized output', false);
 
-  if (commander.dependents) {
-    packages = packages.concat(_.flatMap(packages, pkg => findTransitiveDependentsOrDependencies(allPackages, pkg.name, 'localDependents')));
-  }
+commander
+  .command('install -- [args...]')
+  .description('`yarn install` for the specified packages')
+  .action(command(performInstall));
 
-  if (commander.dependencies) {
-    packages = packages.concat(_.flatMap(packages, pkg => findTransitiveDependentsOrDependencies(allPackages, pkg.name, 'localDependencies')));
-  }
+commander
+  .command('link')
+  .description('symlink all local package dependencies (ignores all flags)')
+  .action(command(performLink));
 
-  return _.uniqBy(packages, 'name');
-}
+commander
+  .command('list')
+  .description('list package names matching all provided flags')
+  .action(command(performList));
 
-function applyIncludeExclude(package) {
-  return (
-    (commander.include.length === 0 || commander.include.some(regex => new RegExp(regex).test(package.name))) &&
-    (commander.exclude.length === 0 || !commander.exclude.some(regex => new RegExp(regex).test(package.name)))
-  );
-};
+commander
+  .command('run <scriptname> -- [args...]')
+  .description('`yarn run <scriptname>` for the specified packages')
+  .action(command(performRun));
 
-function getSelectedPackages(additionalFilter = () => true) {
-  const packagesPath = getPackagesPath();
+commander
+  .command('exec <executable> -- [args...]')
+  .description('run `<executable> <args>` for the specified packages')
+  .action(command(performExec));
 
-  if (!fs.existsSync(packagesPath)) {
-    throw new Error(`path ${packagesPath} does not exist`);
-  }
-
-  const packagesByName = getPackages(packagesPath);
-  const selectedPackages = _.chain(packagesByName)
-    .values()
-    .filter(applyIncludeExclude)
-    .flatMap(pkg => maybeIncludeDependentsAndDependencies(packagesByName, pkg))
-    .uniqBy('name')
-    .sortBy('name')
-    .filter(additionalFilter)
-    .value();
-
-  return { packagesPath, packagesByName, selectedPackages };
-}
-
-function performLink() {
-  const startTime = Date.now();
-  sideEffectingInit();
-  const packageCount = linkAllPackagesToEachOther(getPackagesPath());
-  logger.info(`yerna: linked ${chalk.cyan(packageCount)} local packages`);
-  LoggerWrapper.logSuccessTiming(startTime);
-}
-
-function performInstall(moreArgs) {
-  sideEffectingInit();
-  const yarnArgs = [ 'install' ].concat(moreArgs);
-  const { packagesPath, packagesByName, selectedPackages } = getSelectedPackages();
-  runPackagesToposorted(
-    new LoggerWrapper(commander, selectedPackages, 'yarn ' + yarnArgs.join(' ')),
-    commander,
-    packagesPath,
-    selectedPackages,
-    createTaskRunner(spawnArgs => runYarnWithPackageJsonMangling(yarnArgs, spawnArgs, packagesByName))
-  );
-}
-
-function performList() {
-  const startTime = Date.now();
-  sideEffectingInit();
-  const { packagesPath, selectedPackages } = getSelectedPackages();
-  runPackagesToposorted(
-    new LoggerWrapper(commander, selectedPackages),
-    commander,
-    packagesPath,
-    selectedPackages,
-    (pkg) => {
-      logger.info(pkg.name);
-      return Promise.resolve();
-    }
-  );
-}
-
-function performRun(scriptName, moreArgs) {
-  sideEffectingInit();
-  const yarnArgs = [ 'run', scriptName  ].concat(moreArgs);
-  const { packagesPath, packagesByName, selectedPackages } = getSelectedPackages(package => !!package.scripts[scriptName]);
-  runPackagesToposorted(
-    new LoggerWrapper(commander, selectedPackages, 'yarn ' + yarnArgs.join(' '), scriptName),
-    commander,
-    packagesPath,
-    selectedPackages,
-    createTaskRunner(spawnArgs => runYarnWithPackageJsonMangling(yarnArgs, spawnArgs, packagesByName))
-  );
-}
-
-function performExec(binaryName, moreArgs) {
-  sideEffectingInit();
-  const { packagesPath, selectedPackages } = getSelectedPackages();
-  runPackagesToposorted(
-    new LoggerWrapper(commander, selectedPackages, binaryName + [ '' ].concat(moreArgs).join(' ')),
-    commander,
-    packagesPath,
-    selectedPackages,
-    createTaskRunner(spawnArgs => child_process.spawn(binaryName, moreArgs, spawnArgs))
-  );
-}
+commander.on('--help', () =>{
+  [
+    '  Notes:',
+    '',
+    '    - Use -- to separate arguments intended for Yarn. See examples.',
+    '    - Most tasks automatically relink local dependencies; `yerna link` usage should be rare.',
+    '',
+    '  Examples:',
+    '',
+    '    $ yerna install',
+    '    $ yerna install --include foo',
+    '    $ yerna install -- --pure-lockfile',
+    '    $ yerna install --include foo --include bar -- --pure-lockfile',
+    '    $ yerna run taskname --include foo --exclude bar',
+    '    $ yerna exec ls -- -la',
+    ''
+  ].forEach(line => console.log(line));
+});
 
 commander.parse(process.argv);
 
